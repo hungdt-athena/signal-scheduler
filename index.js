@@ -9,154 +9,215 @@ app.use(express.json());
 app.use(express.static('public'));
 
 const dataFile = path.join(__dirname, 'schedules.json');
+const logsFile = path.join(__dirname, 'logs.json');
 
-// Helper to read schedules
-function getSchedules() {
-  if (!fs.existsSync(dataFile)) {
-    return [];
-  }
-  try {
-    const data = fs.readFileSync(dataFile, 'utf8');
-    return JSON.parse(data);
-  } catch (err) {
-    console.error('Error reading schedules:', err);
-    return [];
-  }
+function getJson(file) {
+  if (!fs.existsSync(file)) return [];
+  try { return JSON.parse(fs.readFileSync(file, 'utf8')); }
+  catch (e) { return []; }
+}
+function saveJson(file, data) {
+  fs.writeFileSync(file, JSON.stringify(data, null, 2), 'utf8');
 }
 
-// Helper to save schedules
-function saveSchedules(schedules) {
-  try {
-    fs.writeFileSync(dataFile, JSON.stringify(schedules, null, 2), 'utf8');
-  } catch (err) {
-    console.error('Error saving schedules:', err);
-  }
+function getSchedules() { return getJson(dataFile); }
+function saveSchedules(data) { saveJson(dataFile, data); }
+function getLogs() { return getJson(logsFile); }
+function addLog(log) {
+    const logs = getLogs();
+    logs.unshift(log);
+    if (logs.length > 50) logs.pop();
+    saveJson(logsFile, logs);
 }
 
-// Global store for active schedule jobs
 const activeJobs = {};
 
-// Function to trigger webhook
-async function triggerWebhook(webhookUrl, id) {
-  try {
-    console.log(`[${new Date().toISOString()}] Triggering webhook for schedule ${id}: ${webhookUrl}`);
-    const response = await fetch(webhookUrl, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ message: "Triggered from Replit Scheduler", scheduleId: id, timestamp: new Date().toISOString() })
-    });
-    console.log(`[${new Date().toISOString()}] Webhook response status: ${response.status}`);
-  } catch (err) {
-    console.error(`Error triggering webhook ${webhookUrl}:`, err.message);
-  } finally {
-    // Remove completed job from store
-    delete activeJobs[id];
-    
-    // Update data file (remove past jobs)
-    let schedules = getSchedules();
-    schedules = schedules.filter(s => s.id !== id);
-    saveSchedules(schedules);
-  }
-}
-
-// Function to schedule a single job
-function scheduleJob(id, targetTime, webhookUrl) {
-  const date = new Date(targetTime);
-  
-  // If time has passed, remove from list and don't execute
-  if (date < new Date()) {
-    console.log(`Skipping past schedule ${id}`);
-    return;
-  }
-
-  console.log(`Scheduling job ${id} for ${date.toISOString()} -> ${webhookUrl}`);
-  
-  const job = schedule.scheduleJob(date, function() {
-    triggerWebhook(webhookUrl, id);
-  });
-  
-  if (job) {
-    activeJobs[id] = job;
-  }
-}
-
-// Initialize: Load schedules on startup
-function initSchedules() {
-  const schedules = getSchedules();
-  let validSchedules = [];
-  
-  schedules.forEach(item => {
-    const date = new Date(item.targetTime);
-    if (date >= new Date()) {
-      scheduleJob(item.id, item.targetTime, item.webhookUrl);
-      validSchedules.push(item);
+function cancelJob(id) {
+    if (activeJobs[id]) {
+        activeJobs[id].cancel();
+        delete activeJobs[id];
     }
-  });
-  
-  // Cleanup past schedules from file
-  if (validSchedules.length !== schedules.length) {
-    saveSchedules(validSchedules);
-  }
 }
 
+async function triggerWebhook(id) {
+    const schedules = getSchedules();
+    const sch = schedules.find(s => s.id === id);
+    if (!sch || !sch.isActive) return;
+
+    let status = 'Success';
+    let responseData = '';
+    try {
+        const controller = new AbortController();
+        const timeoutId = setTimeout(() => controller.abort(), 15000);
+        const res = await fetch(sch.webhookUrl, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ message: "Triggered from Signal Scheduler", scheduleName: sch.name }),
+            signal: controller.signal
+        });
+        clearTimeout(timeoutId);
+        responseData = `Status: ${res.status}`;
+        if (!res.ok) status = 'Failed';
+    } catch (e) {
+        status = 'Failed';
+        responseData = e.message;
+    }
+
+    addLog({
+        id: uuidv4(),
+        scheduleId: id,
+        scheduleName: sch.name,
+        time: new Date().toISOString(), // Raw UTC, formatted later
+        webhookUrl: sch.webhookUrl,
+        status,
+        response: responseData
+    });
+
+    if (sch.type === 'once') {
+        sch.isActive = false;
+        saveSchedules(schedules);
+        // Do not reschedule
+    } else if (sch.type === 'minutes' || sch.type === 'hours') {
+        // Need to recreate the node-schedule job for the next interval
+        scheduleJob(sch);
+    }
+}
+
+function scheduleJob(sch) {
+    cancelJob(sch.id);
+    if (!sch.isActive) return;
+
+    let rule;
+    const now = Date.now();
+
+    try {
+        if (sch.type === 'once') {
+            const date = new Date(sch.params.targetTime + "+07:00"); // Forces UTC+7 timezone correctly
+            if (date.getTime() <= now) {
+                sch.isActive = false;
+                return; // don't schedule past
+            }
+            rule = date;
+        } else if (sch.type === 'minutes') {
+            const interval = sch.params.value * 60 * 1000;
+            const start = new Date(sch.createdAt).getTime();
+            let nextDate = start + Math.floor((now - start) / interval) * interval;
+            if (nextDate <= now) nextDate += interval;
+            rule = new Date(nextDate);
+        } else if (sch.type === 'hours') {
+            const interval = sch.params.value * 60 * 60 * 1000;
+            const start = new Date(sch.createdAt).getTime();
+            let nextDate = start + Math.floor((now - start) / interval) * interval;
+            if (nextDate <= now) nextDate += interval;
+            rule = new Date(nextDate);
+        } else if (sch.type === 'daily') {
+            const [hh, mm] = sch.params.time.split(':');
+            rule = new schedule.RecurrenceRule();
+            rule.tz = 'Asia/Ho_Chi_Minh';
+            rule.hour = parseInt(hh, 10);
+            rule.minute = parseInt(mm, 10);
+        } else if (sch.type === 'weekly') {
+            const [hh, mm] = (sch.params.time || '00:00').split(':');
+            rule = new schedule.RecurrenceRule();
+            rule.tz = 'Asia/Ho_Chi_Minh';
+            rule.dayOfWeek = parseInt(sch.params.weekday || 0, 10);
+            rule.hour = parseInt(hh, 10);
+            rule.minute = parseInt(mm, 10);
+        }
+    } catch(err) {
+        console.error("Error creating schedule rule:", err);
+        return;
+    }
+
+    if (rule) {
+        console.log(`Scheduling Job ID: ${sch.id} with rule:`, rule);
+        activeJobs[sch.id] = schedule.scheduleJob(rule, () => triggerWebhook(sch.id));
+    }
+}
+
+function initSchedules() {
+    const schedules = getSchedules();
+    let madeChanges = false;
+    schedules.forEach(s => {
+        if (s.isActive) scheduleJob(s);
+    });
+}
 initSchedules();
 
 // API Endpoints
 app.get('/api/schedules', (req, res) => {
-  const schedules = getSchedules();
-  res.json(schedules);
+    res.json(getSchedules());
 });
 
 app.post('/api/schedules', (req, res) => {
-  const { targetTime, webhookUrl } = req.body;
-  
-  if (!targetTime || !webhookUrl) {
-    return res.status(400).json({ error: 'targetTime and webhookUrl are required' });
-  }
+    const { name, type, params, webhookUrl } = req.body;
+    
+    const newSchedule = {
+        id: uuidv4(),
+        name,
+        type,
+        params,
+        webhookUrl,
+        isActive: true,
+        createdAt: new Date().toISOString()
+    };
 
-  const date = new Date(targetTime);
-  if (isNaN(date.getTime()) || date <= new Date()) {
-    return res.status(400).json({ error: 'Invalid or past targetTime' });
-  }
+    const schedules = getSchedules();
+    schedules.push(newSchedule);
+    saveSchedules(schedules);
+    scheduleJob(newSchedule);
 
-  const newSchedule = {
-    id: uuidv4(),
-    targetTime: date.toISOString(),
-    webhookUrl,
-    createdAt: new Date().toISOString()
-  };
+    res.status(201).json(newSchedule);
+});
 
-  const schedules = getSchedules();
-  schedules.push(newSchedule);
-  saveSchedules(schedules);
+app.put('/api/schedules/:id', (req, res) => {
+    const { name, type, params, webhookUrl, isActive } = req.body;
+    const schedules = getSchedules();
+    const index = schedules.findIndex(s => s.id === req.params.id);
+    if (index === -1) return res.status(404).json({ error: 'Not found' });
 
-  scheduleJob(newSchedule.id, newSchedule.targetTime, newSchedule.webhookUrl);
+    schedules[index] = {
+        ...schedules[index],
+        name, type, params, webhookUrl, isActive
+    };
+    saveSchedules(schedules);
+    scheduleJob(schedules[index]);
+    
+    res.json(schedules[index]);
+});
 
-  res.status(201).json(newSchedule);
+app.put('/api/schedules/:id/toggle', (req, res) => {
+    const schedules = getSchedules();
+    const sch = schedules.find(s => s.id === req.params.id);
+    if (!sch) return res.status(404).json({ error: 'Not found' });
+
+    sch.isActive = req.body.isActive;
+    saveSchedules(schedules);
+    
+    if (sch.isActive) scheduleJob(sch);
+    else cancelJob(sch.id);
+
+    res.json(sch);
 });
 
 app.delete('/api/schedules/:id', (req, res) => {
-  const id = req.params.id;
-  
-  // Cancel active job
-  if (activeJobs[id]) {
-    activeJobs[id].cancel();
-    delete activeJobs[id];
-  }
-  
-  let schedules = getSchedules();
-  const initialLength = schedules.length;
-  schedules = schedules.filter(s => s.id !== id);
-  
-  if (schedules.length !== initialLength) {
+    const id = req.params.id;
+    cancelJob(id);
+    let schedules = getSchedules().filter(s => s.id !== id);
     saveSchedules(schedules);
-    res.json({ success: true, message: 'Schedule removed' });
-  } else {
-    res.status(404).json({ error: 'Schedule not found' });
-  }
+    res.json({ success: true });
+});
+
+app.get('/api/logs', (req, res) => {
+    res.json(getLogs());
+});
+
+app.delete('/api/logs', (req, res) => {
+    saveJson(logsFile, []);
+    res.json({ success: true });
 });
 
 const PORT = process.env.PORT || 3000;
 app.listen(PORT, () => {
-  console.log(`Scheduler running on port ${PORT}`);
+    console.log(`Scheduler running on port ${PORT}`);
 });
