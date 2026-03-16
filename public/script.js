@@ -56,6 +56,53 @@ document.addEventListener('DOMContentLoaded', () => {
     typeSelect.addEventListener('change', (e) => {
         paramGroups.forEach(el => el.classList.add('hidden'));
         document.getElementById(`param-${e.target.value}`).classList.remove('hidden');
+        if (e.target.value === 'minutes' || e.target.value === 'hours') {
+            document.getElementById('param-interval-start').classList.remove('hidden');
+            populateDynamicStart();
+        }
+    });
+
+    function populateDynamicStart() {
+        if (isEditing) return; // Don't override dynamically while editing an already saved schedule unless changed
+        const type = typeSelect.value;
+        if (type !== 'minutes' && type !== 'hours') return;
+        
+        const valInput = type === 'minutes' ? document.getElementById('param-minutes-val').value : document.getElementById('param-hours-val').value;
+        const interval = parseInt(valInput, 10);
+        if (!interval || interval < 1) return;
+
+        const now = new Date();
+        const nextDate = new Date(now);
+
+        if (type === 'minutes') {
+            const m = now.getMinutes();
+            const s = now.getSeconds();
+            const ceilMin = Math.ceil((m * 60 + s) / (interval * 60)) * interval;
+            nextDate.setMinutes(0, 0, 0);
+            nextDate.setMinutes(ceilMin);
+            if (nextDate <= new Date()) nextDate.setMinutes(nextDate.getMinutes() + interval);
+        } else if (type === 'hours') {
+            const h = now.getHours();
+            const m = now.getMinutes();
+            const s = now.getSeconds();
+            const ceilHour = Math.ceil((h * 3600 + m * 60 + s) / (interval * 3600)) * interval;
+            nextDate.setHours(0, 0, 0, 0);
+            nextDate.setHours(ceilHour);
+            if (nextDate <= new Date()) nextDate.setHours(nextDate.getHours() + interval);
+        }
+
+        const tzOffset = nextDate.getTimezoneOffset() * 60000;
+        const localISOTime = (new Date(nextDate - tzOffset)).toISOString().slice(0, 16);
+        document.getElementById('param-interval-start-time').value = localISOTime;
+    }
+
+    document.getElementById('param-minutes-val').addEventListener('input', () => {
+        isEditing = false;
+        populateDynamicStart();
+    });
+    document.getElementById('param-hours-val').addEventListener('input', () => {
+        isEditing = false;
+        populateDynamicStart();
     });
 
     // Submitting Form
@@ -79,7 +126,17 @@ document.addEventListener('DOMContentLoaded', () => {
             const v = document.getElementById('param-hours-val').value;
             if (!v || v < 1) return showMessage('Valid hour interval required', 'error');
             params.value = parseInt(v, 10);
-        } else if (type === 'daily') {
+        }
+
+        if (type === 'minutes' || type === 'hours') {
+            const t = document.getElementById('param-interval-start-time').value;
+            if (t) {
+                if (new Date(t) <= new Date()) return showMessage('Initial Start At must be a future time', 'error');
+                params.initialStartAt = t;
+            }
+        }
+        
+        if (type === 'daily') {
             const t = document.getElementById('param-daily-time').value;
             if (!t) return showMessage('Time is required', 'error');
             params.time = t;
@@ -217,8 +274,14 @@ document.addEventListener('DOMContentLoaded', () => {
         typeSelect.dispatchEvent(new Event('change'));
 
         if (sch.type === 'once') document.getElementById('param-once-time').value = sch.params.targetTime;
-        if (sch.type === 'minutes') document.getElementById('param-minutes-val').value = sch.params.value;
-        if (sch.type === 'hours') document.getElementById('param-hours-val').value = sch.params.value;
+        if (sch.type === 'minutes') {
+            document.getElementById('param-minutes-val').value = sch.params.value;
+            if (sch.params.initialStartAt) document.getElementById('param-interval-start-time').value = sch.params.initialStartAt;
+        }
+        if (sch.type === 'hours') {
+            document.getElementById('param-hours-val').value = sch.params.value;
+            if (sch.params.initialStartAt) document.getElementById('param-interval-start-time').value = sch.params.initialStartAt;
+        }
         if (sch.type === 'daily') document.getElementById('param-daily-time').value = sch.params.time;
         if (sch.type === 'weekly') {
             document.getElementById('param-weekly-day').value = sch.params.weekday;

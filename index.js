@@ -100,15 +100,39 @@ function scheduleJob(sch) {
             rule = date;
         } else if (sch.type === 'minutes') {
             const interval = sch.params.value * 60 * 1000;
-            const start = new Date(sch.createdAt).getTime();
-            let nextDate = start + Math.floor((now - start) / interval) * interval;
-            if (nextDate <= now) nextDate += interval;
+            let nextDate;
+            if (sch.params.initialStartAt) {
+                const start = new Date(sch.params.initialStartAt + "+07:00").getTime();
+                if (now < start) {
+                    nextDate = start;
+                } else {
+                    nextDate = start + Math.ceil((now - start) / interval) * interval;
+                    if (nextDate <= now) nextDate += interval;
+                }
+            } else {
+                const hourStart = new Date(now).setMinutes(0,0,0);
+                nextDate = hourStart + Math.ceil((now - hourStart) / interval) * interval;
+                if (nextDate <= now) nextDate += interval;
+            }
             rule = new Date(nextDate);
         } else if (sch.type === 'hours') {
             const interval = sch.params.value * 60 * 60 * 1000;
-            const start = new Date(sch.createdAt).getTime();
-            let nextDate = start + Math.floor((now - start) / interval) * interval;
-            if (nextDate <= now) nextDate += interval;
+            let nextDate;
+            if (sch.params.initialStartAt) {
+                const start = new Date(sch.params.initialStartAt + "+07:00").getTime();
+                if (now < start) {
+                    nextDate = start;
+                } else {
+                    nextDate = start + Math.ceil((now - start) / interval) * interval;
+                    if (nextDate <= now) nextDate += interval;
+                }
+            } else {
+                const vnNow = new Date(now + 7 * 3600000);
+                const vnDayStart = new Date(vnNow).setUTCHours(0,0,0,0);
+                const dayStartUtc = vnDayStart - 7 * 3600000;
+                nextDate = dayStartUtc + Math.ceil((now - dayStartUtc) / interval) * interval;
+                if (nextDate <= now) nextDate += interval;
+            }
             rule = new Date(nextDate);
         } else if (sch.type === 'daily') {
             const [hh, mm] = sch.params.time.split(':');
