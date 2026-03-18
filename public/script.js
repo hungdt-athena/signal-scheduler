@@ -9,6 +9,7 @@ document.addEventListener('DOMContentLoaded', () => {
     const logsContainer = document.getElementById('logs-list');
     const logTemplate = document.getElementById('log-template');
     const groupFilterEl = document.getElementById('group-filter');
+    const logsGroupFilterEl = document.getElementById('logs-group-filter');
     const groupsDatalist = document.getElementById('groups-datalist');
 
     // Tabs
@@ -20,7 +21,8 @@ document.addEventListener('DOMContentLoaded', () => {
     // State
     let isEditing = false;
     let autoRefreshInterval;
-    let activeGroupFilter = null; // null = show all
+    let activeGroupFilter = null;
+    let activeLogsGroupFilter = null;
 
     // Initialization
     function init() {
@@ -51,6 +53,7 @@ document.addEventListener('DOMContentLoaded', () => {
             tabSchedules.classList.remove('active');
             viewLogs.classList.remove('hidden');
             viewSchedules.classList.add('hidden');
+            fetchGroups();
             fetchLogs();
             autoRefreshInterval = setInterval(fetchLogs, 15000);
         }
@@ -114,43 +117,50 @@ document.addEventListener('DOMContentLoaded', () => {
         try {
             const res = await fetch('/api/groups');
             const groups = await res.json();
-            // Populate datalist for form input
             groupsDatalist.innerHTML = '';
             groups.forEach(g => {
                 const opt = document.createElement('option');
                 opt.value = g.name;
                 groupsDatalist.appendChild(opt);
             });
-            // Render filter bar
             renderGroupFilter(groups);
+            renderLogsGroupFilter(groups);
         } catch (err) {
             console.error('Failed to fetch groups', err);
         }
     }
 
-    function renderGroupFilter(groups) {
-        groupFilterEl.innerHTML = '';
+    function buildFilterBar(containerEl, groups, activeFilter, onSelect) {
+        containerEl.innerHTML = '';
 
         const allBtn = document.createElement('button');
         allBtn.textContent = 'All';
-        allBtn.className = 'group-filter-btn' + (activeGroupFilter === null ? ' active' : '');
-        allBtn.addEventListener('click', () => {
-            activeGroupFilter = null;
-            renderGroupFilter(groups);
-            fetchSchedules();
-        });
-        groupFilterEl.appendChild(allBtn);
+        allBtn.className = 'group-filter-btn' + (activeFilter === null ? ' active' : '');
+        allBtn.addEventListener('click', () => onSelect(null));
+        containerEl.appendChild(allBtn);
 
         groups.forEach(g => {
             const btn = document.createElement('button');
             btn.textContent = g.name;
-            btn.className = 'group-filter-btn' + (activeGroupFilter === g.name ? ' active' : '');
-            btn.addEventListener('click', () => {
-                activeGroupFilter = g.name;
-                renderGroupFilter(groups);
-                fetchSchedules();
-            });
-            groupFilterEl.appendChild(btn);
+            btn.className = 'group-filter-btn' + (activeFilter === g.name ? ' active' : '');
+            btn.addEventListener('click', () => onSelect(g.name));
+            containerEl.appendChild(btn);
+        });
+    }
+
+    function renderGroupFilter(groups) {
+        buildFilterBar(groupFilterEl, groups, activeGroupFilter, (name) => {
+            activeGroupFilter = name;
+            renderGroupFilter(groups);
+            fetchSchedules();
+        });
+    }
+
+    function renderLogsGroupFilter(groups) {
+        buildFilterBar(logsGroupFilterEl, groups, activeLogsGroupFilter, (name) => {
+            activeLogsGroupFilter = name;
+            renderLogsGroupFilter(groups);
+            fetchLogs();
         });
     }
 
@@ -364,7 +374,8 @@ document.addEventListener('DOMContentLoaded', () => {
     // Logs List
     async function fetchLogs() {
         try {
-            const res = await fetch('/api/logs');
+            const url = activeLogsGroupFilter ? `/api/logs?group=${encodeURIComponent(activeLogsGroupFilter)}` : '/api/logs';
+            const res = await fetch(url);
             const data = await res.json();
             renderLogs(data);
         } catch (err) {

@@ -43,6 +43,7 @@ async function triggerWebhook(id) {
         id: uuidv4(),
         schedule_id: id,
         schedule_name: sch.name,
+        group_name: sch.group_name || 'General',
         time: new Date().toISOString(),
         webhook_url: sch.webhook_url,
         status,
@@ -208,7 +209,7 @@ app.delete('/api/schedules/:id', async (req, res) => {
 });
 
 app.get('/api/logs', async (req, res) => {
-    const logs = await db.getLogs();
+    const logs = await db.getLogs(req.query.group || null);
     res.json(logs);
 });
 

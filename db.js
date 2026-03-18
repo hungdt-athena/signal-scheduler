@@ -88,13 +88,16 @@ async function findOrCreateGroup(name) {
 
 // ── Logs ───────────────────────────────────────────────────────────────────
 
-async function getLogs() {
-  const { data, error } = await supabase
+async function getLogs(groupName) {
+  let query = supabase
     .from('logs')
     .select('*')
     .order('time', { ascending: false })
     .limit(50);
 
+  if (groupName) query = query.eq('group_name', groupName);
+
+  const { data, error } = await query;
   if (error) { console.error('getLogs error:', error); return []; }
   return data;
 }
