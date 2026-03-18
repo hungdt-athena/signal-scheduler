@@ -101,6 +101,12 @@
                     </div>
 
                     <div class="form-group">
+                        <label for="schedule-group">Group</label>
+                        <input type="text" id="schedule-group" list="groups-datalist" placeholder="e.g. Marketing (or create new)" autocomplete="off">
+                        <datalist id="groups-datalist"></datalist>
+                    </div>
+
+                    <div class="form-group">
                         <label for="webhook-url">Webhook URL</label>
                         <input type="url" id="webhook-url" placeholder="https://api.example.com/webhook" required>
                     </div>
@@ -117,7 +123,10 @@
             </section>
 
             <section class="glass-panel list-schedule-section">
-                <h2>Active Schedules</h2>
+                <div class="header-split">
+                    <h2>Active Schedules</h2>
+                </div>
+                <div class="group-filter" id="group-filter"></div>
                 <div class="schedules-container" id="schedules-list">
                     <div class="loading-state">Loading schedules...</div>
                 </div>
@@ -141,7 +150,10 @@
     <template id="schedule-template">
         <div class="schedule-card">
             <div class="schedule-main">
-                <h3 class="sch-title"></h3>
+                <div class="sch-header">
+                    <h3 class="sch-title"></h3>
+                    <span class="sch-group-badge"></span>
+                </div>
                 <div class="sch-meta">
                     <span class="sch-type-badge"></span>
                     <span class="sch-url"></span>

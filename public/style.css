@@ -117,3 +117,10 @@ input:checked + .slider:before { transform: translateX(20px); background-color: 
 .message { padding: 0.8rem; border-radius: 8px; font-size: 0.9rem; text-align: center; margin-top: 1rem; }
 .message.success { background: rgba(52, 211, 153, 0.1); color: var(--success-color); }
 .message.error { background: rgba(251, 113, 133, 0.1); color: var(--danger-color); }
+/* Groups */
+.group-filter { display: flex; flex-wrap: wrap; gap: 0.5rem; margin-bottom: 1rem; }
+.group-filter-btn { background: rgba(255,255,255,0.05); border: 1px solid var(--panel-border); color: var(--text-secondary); padding: 0.3rem 0.8rem; border-radius: 20px; font-size: 0.85rem; cursor: pointer; transition: all 0.2s; }
+.group-filter-btn:hover { background: rgba(56,189,248,0.1); border-color: rgba(56,189,248,0.4); color: var(--primary-color); }
+.group-filter-btn.active { background: rgba(56,189,248,0.15); border-color: var(--primary-color); color: var(--primary-color); }
+.sch-header { display: flex; align-items: center; gap: 0.6rem; margin-bottom: 0.3rem; }
+.sch-group-badge { font-size: 0.72rem; background: rgba(168,85,247,0.15); color: #c084fc; border: 1px solid rgba(168,85,247,0.3); padding: 0.15rem 0.5rem; border-radius: 10px; white-space: nowrap; }

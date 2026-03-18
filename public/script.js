@@ -8,6 +8,8 @@ document.addEventListener('DOMContentLoaded', () => {
     const template = document.getElementById('schedule-template');
     const logsContainer = document.getElementById('logs-list');
     const logTemplate = document.getElementById('log-template');
+    const groupFilterEl = document.getElementById('group-filter');
+    const groupsDatalist = document.getElementById('groups-datalist');
 
     // Tabs
     const tabSchedules = document.getElementById('tab-schedules');
@@ -18,13 +20,14 @@ document.addEventListener('DOMContentLoaded', () => {
     // State
     let isEditing = false;
     let autoRefreshInterval;
+    let activeGroupFilter = null; // null = show all
 
     // Initialization
     function init() {
         const now = new Date();
         now.setMinutes(now.getMinutes() - now.getTimezoneOffset());
         document.getElementById('param-once-time').min = now.toISOString().slice(0, 16);
-        
+
         switchTab('schedules');
     }
 
@@ -34,12 +37,13 @@ document.addEventListener('DOMContentLoaded', () => {
 
     function switchTab(tab) {
         clearInterval(autoRefreshInterval);
-        
+
         if (tab === 'schedules') {
             tabSchedules.classList.add('active');
             tabLogs.classList.remove('active');
             viewSchedules.classList.remove('hidden');
             viewLogs.classList.add('hidden');
+            fetchGroups();
             fetchSchedules();
             autoRefreshInterval = setInterval(fetchSchedules, 30000);
         } else {
@@ -63,10 +67,10 @@ document.addEventListener('DOMContentLoaded', () => {
     });
 
     function populateDynamicStart() {
-        if (isEditing) return; // Don't override dynamically while editing an already saved schedule unless changed
+        if (isEditing) return;
         const type = typeSelect.value;
         if (type !== 'minutes' && type !== 'hours') return;
-        
+
         const valInput = type === 'minutes' ? document.getElementById('param-minutes-val').value : document.getElementById('param-hours-val').value;
         const interval = parseInt(valInput, 10);
         if (!interval || interval < 1) return;
@@ -105,14 +109,58 @@ document.addEventListener('DOMContentLoaded', () => {
         populateDynamicStart();
     });
 
+    // Groups
+    async function fetchGroups() {
+        try {
+            const res = await fetch('/api/groups');
+            const groups = await res.json();
+            // Populate datalist for form input
+            groupsDatalist.innerHTML = '';
+            groups.forEach(g => {
+                const opt = document.createElement('option');
+                opt.value = g.name;
+                groupsDatalist.appendChild(opt);
+            });
+            // Render filter bar
+            renderGroupFilter(groups);
+        } catch (err) {
+            console.error('Failed to fetch groups', err);
+        }
+    }
+
+    function renderGroupFilter(groups) {
+        groupFilterEl.innerHTML = '';
+
+        const allBtn = document.createElement('button');
+        allBtn.textContent = 'All';
+        allBtn.className = 'group-filter-btn' + (activeGroupFilter === null ? ' active' : '');
+        allBtn.addEventListener('click', () => {
+            activeGroupFilter = null;
+            renderGroupFilter(groups);
+            fetchSchedules();
+        });
+        groupFilterEl.appendChild(allBtn);
+
+        groups.forEach(g => {
+            const btn = document.createElement('button');
+            btn.textContent = g.name;
+            btn.className = 'group-filter-btn' + (activeGroupFilter === g.name ? ' active' : '');
+            btn.addEventListener('click', () => {
+                activeGroupFilter = g.name;
+                renderGroupFilter(groups);
+                fetchSchedules();
+            });
+            groupFilterEl.appendChild(btn);
+        });
+    }
+
     // Submitting Form
     form.addEventListener('submit', async (e) => {
         e.preventDefault();
-        
+
         const type = typeSelect.value;
         const params = {};
 
-        // Validation & Params Builder
         if (type === 'once') {
             const t = document.getElementById('param-once-time').value;
             if (!t) return showMessage('Time is required', 'error');
@@ -135,7 +183,7 @@ document.addEventListener('DOMContentLoaded', () => {
                 params.initialStartAt = t;
             }
         }
-        
+
         if (type === 'daily') {
             const t = document.getElementById('param-daily-time').value;
             if (!t) return showMessage('Time is required', 'error');
@@ -147,21 +195,24 @@ document.addEventListener('DOMContentLoaded', () => {
             params.time = t;
         }
 
+        const groupName = document.getElementById('schedule-group').value.trim() || 'General';
+
         const payload = {
             name: document.getElementById('schedule-name').value,
-            type: type,
-            params: params,
-            webhookUrl: document.getElementById('webhook-url').value
+            type,
+            params,
+            webhook_url: document.getElementById('webhook-url').value,
+            group_name: groupName
         };
 
         const id = document.getElementById('edit-id').value;
         setLoading(true);
         messageEl.classList.add('hidden');
-        
+
         try {
             let res;
             if (isEditing) {
-                payload.isActive = true;
+                payload.is_active = true;
                 res = await fetch(`/api/schedules/${id}`, {
                     method: 'PUT',
                     headers: { 'Content-Type': 'application/json' },
@@ -174,10 +225,11 @@ document.addEventListener('DOMContentLoaded', () => {
                     body: JSON.stringify(payload)
                 });
             }
-            
+
             if (res.ok) {
                 showMessage(isEditing ? 'Schedule updated!' : 'Schedule created!', 'success');
                 resetForm();
+                fetchGroups();
                 fetchSchedules();
             } else {
                 const err = await res.json();
@@ -218,42 +270,49 @@ document.addEventListener('DOMContentLoaded', () => {
 
     function renderSchedules(schedules) {
         listContainer.innerHTML = '';
-        if (schedules.length === 0) {
-            listContainer.innerHTML = '<div class="empty-state">No active schedules found.</div>';
+
+        let filtered = schedules;
+        if (activeGroupFilter) {
+            filtered = schedules.filter(s => s.group_name === activeGroupFilter);
+        }
+
+        if (filtered.length === 0) {
+            listContainer.innerHTML = '<div class="empty-state">No schedules found.</div>';
             return;
         }
-        
-        schedules.sort((a, b) => b.isActive - a.isActive || new Date(b.createdAt) - new Date(a.createdAt));
-        
-        schedules.forEach(sch => {
+
+        filtered.sort((a, b) => b.is_active - a.is_active || new Date(b.created_at) - new Date(a.created_at));
+
+        filtered.forEach(sch => {
             const clone = template.content.cloneNode(true);
             const card = clone.querySelector('.schedule-card');
-            if(!sch.isActive) card.style.opacity = '0.6';
+            if (!sch.is_active) card.style.opacity = '0.6';
 
             clone.querySelector('.sch-title').textContent = sch.name || 'Untitled';
-            clone.querySelector('.sch-url').textContent = sch.webhookUrl;
+            clone.querySelector('.sch-url').textContent = sch.webhook_url;
             clone.querySelector('.sch-type-badge').textContent = getScheduleDescription(sch);
-            
+            clone.querySelector('.sch-group-badge').textContent = sch.group_name || 'General';
+
             const toggle = clone.querySelector('.sch-active-toggle');
-            toggle.checked = sch.isActive;
+            toggle.checked = sch.is_active;
             toggle.addEventListener('change', async (e) => {
                 await fetch(`/api/schedules/${sch.id}/toggle`, {
                     method: 'PUT',
                     headers: {'Content-Type': 'application/json'},
-                    body: JSON.stringify({isActive: e.target.checked})
+                    body: JSON.stringify({ isActive: e.target.checked })
                 });
                 fetchSchedules();
             });
 
             clone.querySelector('.edit-btn').addEventListener('click', () => loadEditForm(sch));
-            
+
             clone.querySelector('.delete-btn').addEventListener('click', async () => {
-                if(confirm('Delete schedule?')) {
+                if (confirm('Delete schedule?')) {
                     await fetch(`/api/schedules/${sch.id}`, { method: 'DELETE' });
                     fetchSchedules();
                 }
             });
-            
+
             listContainer.appendChild(clone);
         });
     }
@@ -268,8 +327,9 @@ document.addEventListener('DOMContentLoaded', () => {
 
         document.getElementById('edit-id').value = sch.id;
         document.getElementById('schedule-name').value = sch.name;
-        document.getElementById('webhook-url').value = sch.webhookUrl;
-        
+        document.getElementById('webhook-url').value = sch.webhook_url;
+        document.getElementById('schedule-group').value = sch.group_name || 'General';
+
         typeSelect.value = sch.type;
         typeSelect.dispatchEvent(new Event('change'));
 
@@ -318,20 +378,20 @@ document.addEventListener('DOMContentLoaded', () => {
             logsContainer.innerHTML = '<div class="empty-state">No execution logs yet.</div>';
             return;
         }
-        
+
         logs.forEach(log => {
             const clone = logTemplate.content.cloneNode(true);
-            const date = new Date(log.time); 
-            
+            const date = new Date(log.time);
+
             clone.querySelector('.log-time').textContent = date.toLocaleString('en-US', {month: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit', second:'2-digit'});
-            clone.querySelector('.log-name').textContent = log.scheduleName || 'Unknown';
-            clone.querySelector('.log-url').textContent = log.webhookUrl;
-            
+            clone.querySelector('.log-name').textContent = log.schedule_name || 'Unknown';
+            clone.querySelector('.log-url').textContent = log.webhook_url;
+
             const statusBadge = clone.querySelector('.log-status');
             statusBadge.textContent = log.status;
             statusBadge.classList.add(log.status);
 
-            if(log.response) {
+            if (log.response) {
                 statusBadge.title = log.response;
                 statusBadge.style.cursor = 'help';
             }
@@ -341,7 +401,7 @@ document.addEventListener('DOMContentLoaded', () => {
     }
 
     document.getElementById('clear-logs-btn').addEventListener('click', async () => {
-        if(confirm('Clear all logs?')) {
+        if (confirm('Clear all logs?')) {
             await fetch('/api/logs', { method: 'DELETE' });
             fetchLogs();
         }

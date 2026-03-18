@@ -1,34 +1,11 @@
 const express = require('express');
 const schedule = require('node-schedule');
-const fs = require('fs');
-const path = require('path');
 const { v4: uuidv4 } = require('uuid');
+const db = require('./db');
 
 const app = express();
 app.use(express.json());
 app.use(express.static('public'));
-
-const dataFile = path.join(__dirname, 'schedules.json');
-const logsFile = path.join(__dirname, 'logs.json');
-
-function getJson(file) {
-  if (!fs.existsSync(file)) return [];
-  try { return JSON.parse(fs.readFileSync(file, 'utf8')); }
-  catch (e) { return []; }
-}
-function saveJson(file, data) {
-  fs.writeFileSync(file, JSON.stringify(data, null, 2), 'utf8');
-}
-
-function getSchedules() { return getJson(dataFile); }
-function saveSchedules(data) { saveJson(dataFile, data); }
-function getLogs() { return getJson(logsFile); }
-function addLog(log) {
-    const logs = getLogs();
-    logs.unshift(log);
-    if (logs.length > 50) logs.pop();
-    saveJson(logsFile, logs);
-}
 
 const activeJobs = {};
 
@@ -40,16 +17,15 @@ function cancelJob(id) {
 }
 
 async function triggerWebhook(id) {
-    const schedules = getSchedules();
-    const sch = schedules.find(s => s.id === id);
-    if (!sch || !sch.isActive) return;
+    const sch = await db.getScheduleById(id);
+    if (!sch || !sch.is_active) return;
 
     let status = 'Success';
     let responseData = '';
     try {
         const controller = new AbortController();
         const timeoutId = setTimeout(() => controller.abort(), 15000);
-        const res = await fetch(sch.webhookUrl, {
+        const res = await fetch(sch.webhook_url, {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
             body: JSON.stringify({ message: "Triggered from Signal Scheduler", scheduleName: sch.name }),
@@ -63,39 +39,36 @@ async function triggerWebhook(id) {
         responseData = e.message;
     }
 
-    addLog({
+    await db.addLog({
         id: uuidv4(),
-        scheduleId: id,
-        scheduleName: sch.name,
-        time: new Date().toISOString(), // Raw UTC, formatted later
-        webhookUrl: sch.webhookUrl,
+        schedule_id: id,
+        schedule_name: sch.name,
+        time: new Date().toISOString(),
+        webhook_url: sch.webhook_url,
         status,
         response: responseData
     });
 
     if (sch.type === 'once') {
-        sch.isActive = false;
-        saveSchedules(schedules);
-        // Do not reschedule
+        await db.updateSchedule(id, { is_active: false });
     } else if (sch.type === 'minutes' || sch.type === 'hours') {
-        // Need to recreate the node-schedule job for the next interval
         scheduleJob(sch);
     }
 }
 
 function scheduleJob(sch) {
     cancelJob(sch.id);
-    if (!sch.isActive) return;
+    if (!sch.is_active) return;
 
     let rule;
     const now = Date.now();
 
     try {
         if (sch.type === 'once') {
-            const date = new Date(sch.params.targetTime + "+07:00"); // Forces UTC+7 timezone correctly
+            const date = new Date(sch.params.targetTime + "+07:00");
             if (date.getTime() <= now) {
-                sch.isActive = false;
-                return; // don't schedule past
+                db.updateSchedule(sch.id, { is_active: false }).catch(console.error);
+                return;
             }
             rule = date;
         } else if (sch.type === 'minutes') {
@@ -159,85 +132,88 @@ function scheduleJob(sch) {
     }
 }
 
-function initSchedules() {
-    const schedules = getSchedules();
-    let madeChanges = false;
+async function initSchedules() {
+    const schedules = await db.getSchedules();
     schedules.forEach(s => {
-        if (s.isActive) scheduleJob(s);
+        if (s.is_active) scheduleJob(s);
     });
 }
 initSchedules();
 
-// API Endpoints
-app.get('/api/schedules', (req, res) => {
-    res.json(getSchedules());
+// ── API ────────────────────────────────────────────────────────────────────
+
+app.get('/api/groups', async (req, res) => {
+    const groups = await db.getGroups();
+    res.json(groups);
 });
 
-app.post('/api/schedules', (req, res) => {
-    const { name, type, params, webhookUrl } = req.body;
-    
+app.get('/api/schedules', async (req, res) => {
+    const schedules = await db.getSchedules();
+    res.json(schedules);
+});
+
+app.post('/api/schedules', async (req, res) => {
+    const { name, type, params, webhook_url, group_name } = req.body;
+
+    const group_id = await db.findOrCreateGroup(group_name || 'General');
+
     const newSchedule = {
         id: uuidv4(),
         name,
         type,
         params,
-        webhookUrl,
-        isActive: true,
-        createdAt: new Date().toISOString()
+        webhook_url,
+        group_id,
+        is_active: true,
+        created_at: new Date().toISOString()
     };
 
-    const schedules = getSchedules();
-    schedules.push(newSchedule);
-    saveSchedules(schedules);
-    scheduleJob(newSchedule);
-
-    res.status(201).json(newSchedule);
+    const created = await db.createSchedule(newSchedule);
+    scheduleJob(created);
+    res.status(201).json(created);
 });
 
-app.put('/api/schedules/:id', (req, res) => {
-    const { name, type, params, webhookUrl, isActive } = req.body;
-    const schedules = getSchedules();
-    const index = schedules.findIndex(s => s.id === req.params.id);
-    if (index === -1) return res.status(404).json({ error: 'Not found' });
+app.put('/api/schedules/:id', async (req, res) => {
+    const { name, type, params, webhook_url, is_active, group_name } = req.body;
 
-    schedules[index] = {
-        ...schedules[index],
-        name, type, params, webhookUrl, isActive
-    };
-    saveSchedules(schedules);
-    scheduleJob(schedules[index]);
-    
-    res.json(schedules[index]);
+    const updates = { name, type, params, webhook_url, is_active };
+    if (group_name) {
+        updates.group_id = await db.findOrCreateGroup(group_name);
+    }
+
+    const updated = await db.updateSchedule(req.params.id, updates);
+    if (!updated) return res.status(404).json({ error: 'Not found' });
+
+    scheduleJob(updated);
+    res.json(updated);
 });
 
-app.put('/api/schedules/:id/toggle', (req, res) => {
-    const schedules = getSchedules();
-    const sch = schedules.find(s => s.id === req.params.id);
+app.put('/api/schedules/:id/toggle', async (req, res) => {
+    const sch = await db.getScheduleById(req.params.id);
     if (!sch) return res.status(404).json({ error: 'Not found' });
 
-    sch.isActive = req.body.isActive;
-    saveSchedules(schedules);
-    
-    if (sch.isActive) scheduleJob(sch);
-    else cancelJob(sch.id);
+    const updated = await db.updateSchedule(req.params.id, { is_active: req.body.isActive });
 
-    res.json(sch);
+    if (updated.is_active) scheduleJob(updated);
+    else cancelJob(updated.id);
+
+    res.json(updated);
 });
 
-app.delete('/api/schedules/:id', (req, res) => {
+app.delete('/api/schedules/:id', async (req, res) => {
     const id = req.params.id;
     cancelJob(id);
-    let schedules = getSchedules().filter(s => s.id !== id);
-    saveSchedules(schedules);
+    await db.deleteSchedule(id);
     res.json({ success: true });
 });
 
-app.get('/api/logs', (req, res) => {
-    res.json(getLogs());
+app.get('/api/logs', async (req, res) => {
+    const logs = await db.getLogs();
+    res.json(logs);
 });
 
-app.delete('/api/logs', (req, res) => {
-    saveJson(logsFile, []);
+app.delete('/api/logs', async (req, res) => {
+    await db.clearLogs();
     res.json({ success: true });
 });
 
