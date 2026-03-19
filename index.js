@@ -13,7 +13,9 @@ function cancelJob(id) {
     if (activeJobs[id]) {
         activeJobs[id].cancel();
         delete activeJobs[id];
+        return true;
     }
+    return false;
 }
 
 async function triggerWebhook(id) {
@@ -60,7 +62,8 @@ async function triggerWebhook(id) {
 }
 
 function scheduleJob(sch) {
-    cancelJob(sch.id);
+    const replaced = cancelJob(sch.id);
+    if (replaced) console.warn(`[SCHEDULER] Replacing existing job for ${sch.id} (${sch.name}) — double registration detected`);
     if (!sch.is_active) return;
 
     let rule;
