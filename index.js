@@ -116,6 +116,7 @@ function scheduleJob(sch) {
             rule.tz = 'Asia/Ho_Chi_Minh';
             rule.hour = parseInt(hh, 10);
             rule.minute = parseInt(mm, 10);
+            rule.second = 0;
         } else if (sch.type === 'weekly') {
             const [hh, mm] = (sch.params.time || '00:00').split(':');
             rule = new schedule.RecurrenceRule();
@@ -123,6 +124,7 @@ function scheduleJob(sch) {
             rule.dayOfWeek = parseInt(sch.params.weekday || 0, 10);
             rule.hour = parseInt(hh, 10);
             rule.minute = parseInt(mm, 10);
+            rule.second = 0;
         }
     } catch(err) {
         console.error("Error creating schedule rule:", err);
