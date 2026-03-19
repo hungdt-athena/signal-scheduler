@@ -17,8 +17,10 @@ function cancelJob(id) {
 }
 
 async function triggerWebhook(id) {
+    console.log(`[TRIGGER] Firing webhook for schedule ${id}`);
     const sch = await db.getScheduleById(id);
-    if (!sch || !sch.is_active) return;
+    if (!sch) { console.error(`[TRIGGER] Schedule ${id} not found in DB — skipping`); return; }
+    if (!sch.is_active) { console.log(`[TRIGGER] Schedule ${id} (${sch.name}) is inactive — skipping`); return; }
 
     let status = 'Success';
     let responseData = '';
@@ -128,8 +130,14 @@ function scheduleJob(sch) {
     }
 
     if (rule) {
-        console.log(`Scheduling Job ID: ${sch.id} with rule:`, rule);
-        activeJobs[sch.id] = schedule.scheduleJob(rule, () => triggerWebhook(sch.id));
+        console.log(`Scheduling Job ID: ${sch.id} (${sch.type}) with rule:`, rule);
+        const job = schedule.scheduleJob(rule, () => triggerWebhook(sch.id));
+        if (!job) {
+            console.error(`[SCHEDULER] FAILED to register job for ${sch.id} (${sch.name}) — node-schedule rejected rule:`, rule);
+        } else {
+            console.log(`[SCHEDULER] Job registered OK for ${sch.id} (${sch.name}), next: ${job.nextInvocation()}`);
+            activeJobs[sch.id] = job;
+        }
     }
 }
 
@@ -218,7 +226,22 @@ app.delete('/api/logs', async (req, res) => {
     res.json({ success: true });
 });
 
+app.get('/health', (req, res) => res.json({ status: 'ok', uptime: process.uptime() }));
+
 const PORT = process.env.PORT || 3000;
 app.listen(PORT, () => {
     console.log(`Scheduler running on port ${PORT}`);
+
+    // Keep-alive: ping self every 4 minutes to prevent Cloud Run from scaling to zero
+    const selfUrl = process.env.APP_URL;
+    if (selfUrl) {
+        setInterval(() => {
+            fetch(`${selfUrl}/health`)
+                .then(() => console.log('[KEEPALIVE] ping ok'))
+                .catch(e => console.error('[KEEPALIVE] ping failed:', e.message));
+        }, 4 * 60 * 1000);
+        console.log(`[KEEPALIVE] Self-ping enabled → ${selfUrl}/health`);
+    } else {
+        console.warn('[KEEPALIVE] APP_URL not set — server may be killed by Cloud Run when idle');
+    }
 });
