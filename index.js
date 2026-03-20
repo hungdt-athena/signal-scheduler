@@ -237,16 +237,30 @@ const PORT = process.env.PORT || 3000;
 app.listen(PORT, () => {
     console.log(`Scheduler running on port ${PORT}`);
 
-    // Keep-alive: ping self every 4 minutes to prevent Cloud Run from scaling to zero
+    // Keep-alive: ping self every 2 minutes to prevent platform from killing the process
     const selfUrl = process.env.APP_URL;
     if (selfUrl) {
         setInterval(() => {
             fetch(`${selfUrl}/health`)
                 .then(() => console.log('[KEEPALIVE] ping ok'))
                 .catch(e => console.error('[KEEPALIVE] ping failed:', e.message));
-        }, 4 * 60 * 1000);
-        console.log(`[KEEPALIVE] Self-ping enabled → ${selfUrl}/health`);
+        }, 60 * 1000);
+        console.log(`[KEEPALIVE] Self-ping enabled every 1m → ${selfUrl}/health`);
     } else {
-        console.warn('[KEEPALIVE] APP_URL not set — server may be killed by Cloud Run when idle');
+        console.warn('[KEEPALIVE] APP_URL not set — server may be killed when idle');
     }
+});
+
+// Graceful shutdown: log when platform sends termination signals
+process.on('SIGTERM', () => {
+    console.warn('[SHUTDOWN] Received SIGTERM — platform is killing the process');
+    // Cancel all active jobs gracefully
+    Object.keys(activeJobs).forEach(id => cancelJob(id));
+    process.exit(0);
+});
+
+process.on('SIGINT', () => {
+    console.warn('[SHUTDOWN] Received SIGINT');
+    Object.keys(activeJobs).forEach(id => cancelJob(id));
+    process.exit(0);
 });
